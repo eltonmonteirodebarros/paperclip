@@ -2075,13 +2075,11 @@ export function agentRoutes(
       auditComment,
     ].join("\n");
 
-    if (activeIssue) {
-      const issueSvc = issueService(db);
-      await issueSvc.addComment(activeIssue.id, auditBody, {
-        agentId: actorAgentId ?? undefined,
-        userId: actorUserId ?? undefined,
-      });
-    }
+    const issueSvc = issueService(db);
+    await issueSvc.addComment(activeIssue.id, auditBody, {
+      agentId: actorAgentId ?? undefined,
+      userId: actorUserId ?? undefined,
+    });
 
     await logActivity(db, {
       companyId,
@@ -2093,7 +2091,7 @@ export function agentRoutes(
       details: {
         prevState,
         prevFailedRunId: lastFailedRun.id,
-        auditIssueId: activeIssue?.id ?? null,
+        auditIssueId: activeIssue.id,
       },
     });
 
