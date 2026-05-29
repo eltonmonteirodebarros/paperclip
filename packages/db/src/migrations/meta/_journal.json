@@ -666,6 +666,20 @@
       "when": 1782604800000,
       "tag": "0094_agent_alert_state",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1780065104237,
+      "tag": "0095_service_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1780065104238,
+      "tag": "0096_process_loss_cause_reason",
+      "breakpoints": true
     }
   ]
 }

@@ -352,19 +352,40 @@ describe.sequential("service-token auth — POST /api/issues/:id/comments", () =
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("7. wake-path integration — service comment posts for @mention wake", async () => {
-    const app = await installActor(createApp(), serviceActor());
+  it("7. wake-path integration — service-token @mention triggers heartbeat.wakeup", async () => {
+    const MENTIONED_AGENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    mockIssueService.findMentionedAgents.mockResolvedValue([MENTIONED_AGENT]);
     mockIssueService.addComment.mockResolvedValue(
-      makeComment({ body: `[@Atlas](agent://${AGENT_ID}) weak infra detected` }),
+      makeComment({ body: `[@Atlas](agent://${MENTIONED_AGENT}) weak infra detected` }),
     );
 
+    const app = await installActor(createApp(), serviceActor());
     const res = await request(app)
       .post(`/api/issues/${ISSUE_ID}/comments`)
-      .send({ body: `[@Atlas](agent://${AGENT_ID}) weak infra detected` });
+      .send({ body: `[@Atlas](agent://${MENTIONED_AGENT}) weak infra detected` });
 
     expect(res.status).toBe(201);
-    expect(mockIssueService.addComment).toHaveBeenCalledOnce();
-    const [, body] = mockIssueService.addComment.mock.calls[0];
-    expect(body).toContain("@Atlas");
+    // The wake dispatch is async (void block) — wait for at least one wakeup call.
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalled(), { timeout: 1000 });
+    // wakeup may be called for the assignee AND for @mentions; find the mention-specific call.
+    const mentionCall = mockHeartbeatService.wakeup.mock.calls.find(
+      ([, payload]) => payload.reason === "issue_comment_mentioned",
+    );
+    expect(mentionCall).toBeDefined();
+    const [calledAgentId, wakeupPayload] = mentionCall!;
+    expect(calledAgentId).toBe(MENTIONED_AGENT);
+    expect(wakeupPayload).toMatchObject({ reason: "issue_comment_mentioned" });
+  });
+
+  it("8. logActivity — service-token comment records issue.comment_added in activity log", async () => {
+    const app = await installActor(createApp(), serviceActor());
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/comments`)
+      .send({ body: "Weak infra alert" });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockLogActivity).toHaveBeenCalled(), { timeout: 1000 });
+    const [, activityArgs] = mockLogActivity.mock.calls[0];
+    expect(activityArgs).toMatchObject({ action: "issue.comment_added" });
   });
 });

@@ -5470,25 +5470,17 @@ export function issueRoutes(
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
 
-    // Service-token fast path: scope check + force authorType=system
+    // Service-token validation: scope check + authorType enforcement.
+    // Does NOT early-return so the wake/mention/logActivity/interaction-expiry
+    // pipeline runs for service actors the same as for agents and users.
+    let serviceMode = false;
     if (req.actor.type === "service") {
       if (!assertActorScope(req, res, "comments:write")) return;
       if (req.body.authorType && req.body.authorType !== "system") {
         res.status(422).json({ error: "Service tokens must use authorType=system" });
         return;
       }
-      const comment = await svc.addComment(id, req.body.body, {
-        agentId: undefined,
-        userId: undefined,
-        runId: req.actor.runId,
-      }, {
-        authorType: "system",
-        presentation: req.body.presentation ?? null,
-        metadata: req.body.metadata ?? null,
-      });
-      await issueReferencesSvc.syncComment(comment.id);
-      res.status(201).json(comment);
-      return;
+      serviceMode = true;
     }
 
     if (!assertStructuredCommentFieldsAllowed(req, res, {
@@ -5512,12 +5504,14 @@ export function issueRoutes(
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
+    const humanActorType = actor.actorType !== "system" ? actor.actorType : null;
     const scheduledRetryForHumanComment =
+      !serviceMode && humanActorType &&
       shouldHumanCommentResumeInProgressScheduledRetry({
         hasComment: true,
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
-        actorType: actor.actorType,
+        actorType: humanActorType,
       })
         ? await svc.getCurrentScheduledRetry(issue.id)
         : null;
@@ -5525,14 +5519,16 @@ export function issueRoutes(
       !!scheduledRetryForHumanComment &&
       scheduledRetryForHumanComment.agentId === issue.assigneeAgentId;
     const effectiveMoveToTodoRequested =
-      explicitMoveToTodoRequested ||
-      shouldImplicitlyMoveCommentedIssueToTodo({
-        issueStatus: issue.status,
-        assigneeAgentId: issue.assigneeAgentId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-      }) ||
-      shouldResumeInProgressScheduledRetry;
+      !serviceMode && (
+        explicitMoveToTodoRequested ||
+        (humanActorType && shouldImplicitlyMoveCommentedIssueToTodo({
+          issueStatus: issue.status,
+          assigneeAgentId: issue.assigneeAgentId,
+          actorType: humanActorType,
+          actorId: actor.actorId,
+        })) ||
+        shouldResumeInProgressScheduledRetry
+      );
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
         ? (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
@@ -5627,7 +5623,7 @@ export function issueRoutes(
       userId: actor.actorType === "user" ? actor.actorId : undefined,
       runId: actor.runId,
     }, {
-      authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+      authorType: serviceMode ? "system" : (req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user")),
       presentation: req.body.presentation ?? null,
       metadata: req.body.metadata ?? null,
     });
@@ -5638,7 +5634,7 @@ export function issueRoutes(
       commentReferenceSummaryAfter,
     );
 
-    if (actor.runId) {
+    if (actor.runId && actor.actorType !== "system") {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue comment"));
     }

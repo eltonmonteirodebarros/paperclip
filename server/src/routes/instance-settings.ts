@@ -3,6 +3,7 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import { serviceTokens } from "@paperclipai/db";
 import {
+  ALLOWED_SERVICE_TOKEN_SCOPES,
   issueGraphLivenessAutoRecoveryRequestSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
@@ -162,6 +163,16 @@ export function instanceSettingsRoutes(db: Db) {
     };
     if (!name || !companyId || !Array.isArray(scopes) || scopes.length === 0) {
       res.status(422).json({ error: "name, companyId, and scopes are required" });
+      return;
+    }
+    const unknownScopes = scopes.filter(
+      (s) => !(ALLOWED_SERVICE_TOKEN_SCOPES as readonly string[]).includes(s),
+    );
+    if (unknownScopes.length > 0) {
+      res.status(422).json({
+        error: "Unknown scope(s)",
+        details: { unknownScopes, allowedScopes: ALLOWED_SERVICE_TOKEN_SCOPES },
+      });
       return;
     }
     const plaintext = randomBytes(32).toString("hex");
