@@ -1118,3 +1118,6 @@ export const PLUGIN_BRIDGE_ERROR_CODES = [
   "UNKNOWN",
 ] as const;
 export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];
+
+export const ALLOWED_SERVICE_TOKEN_SCOPES = ["comments:write"] as const;
+export type ServiceTokenScope = (typeof ALLOWED_SERVICE_TOKEN_SCOPES)[number];
