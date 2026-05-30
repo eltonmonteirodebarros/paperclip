@@ -14,6 +14,7 @@ const targetAgentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const companyId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const failedRunId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const activeIssueId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const failedRunFinishedAt = new Date("2026-05-27T12:00:00.000Z");
 
 const baseTargetAgent = {
   id: targetAgentId,
@@ -153,6 +154,7 @@ function createDbStub(options: {
             processLossCauseClass: resolvedCauseClass,
             processLossClassifyConfidence: resolvedConfidence,
             processLossCauseReason: resolvedCauseReason,
+            finishedAt: failedRunFinishedAt,
           }]);
         }
         // Issues query
@@ -510,11 +512,13 @@ describe.sequential("POST /agents/:id/reset-infrastructure-status", () => {
   }, 20_000);
 
   // GNO-214 regression: weak-signal gate
+  // GNO-628: 422 messages must NOT echo the verbatim reason string
   it("rejects weak-confidence reset without weakSignalAcknowledged (422)", async () => {
+    const weakReason = "infrastructure_cause(signal_2_clean_stderr)";
     const app = await createApp(boardActor, {
       lastFailedRunCauseClass: "infrastructure",
       lastFailedRunClassifyConfidence: "weak",
-      lastFailedRunCauseReason: "infrastructure_cause(signal_2_clean_stderr)",
+      lastFailedRunCauseReason: weakReason,
     });
     const res = await requestApp(app, (base) =>
       request(base)
@@ -523,14 +527,18 @@ describe.sequential("POST /agents/:id/reset-infrastructure-status", () => {
     );
     expect(res.status).toBe(422);
     expect(res.body.error).toMatch(/weakSignalAcknowledged/);
+    // GNO-628: reason must NOT be echoed in the 422 response
+    expect(res.body.error).not.toContain(weakReason);
+    expect(res.body.error).not.toMatch(/infrastructure_cause\(signal_/);
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   }, 20_000);
 
   it("rejects weak-confidence reset with weakSignalAcknowledged=true but missing reason in comment (422)", async () => {
+    const weakReason = "infrastructure_cause(signal_2_clean_stderr)";
     const app = await createApp(boardActor, {
       lastFailedRunCauseClass: "infrastructure",
       lastFailedRunClassifyConfidence: "weak",
-      lastFailedRunCauseReason: "infrastructure_cause(signal_2_clean_stderr)",
+      lastFailedRunCauseReason: weakReason,
     });
     const res = await requestApp(app, (base) =>
       request(base)
@@ -539,6 +547,9 @@ describe.sequential("POST /agents/:id/reset-infrastructure-status", () => {
     );
     expect(res.status).toBe(422);
     expect(res.body.error).toMatch(/verbatim/);
+    // GNO-628: reason must NOT be echoed in the 422 response
+    expect(res.body.error).not.toContain(weakReason);
+    expect(res.body.error).not.toMatch(/infrastructure_cause\(signal_/);
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   }, 20_000);
 
@@ -565,6 +576,147 @@ describe.sequential("POST /agents/:id/reset-infrastructure-status", () => {
     );
     const body = mockIssueService.addComment.mock.calls[0][1] as string;
     expect(body).toContain(weakReason);
+  }, 20_000);
+});
+
+// GNO-628: GET /agents/:id/process-loss-context
+describe.sequential("GET /agents/:id/process-loss-context", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/agent-instructions.js");
+    vi.doUnmock("../services/agents.js");
+    vi.doUnmock("../services/approvals.js");
+    vi.doUnmock("../services/budgets.js");
+    vi.doUnmock("../services/company-skills.js");
+    vi.doUnmock("../services/heartbeat.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/instance-settings.js");
+    vi.doUnmock("../services/issue-approvals.js");
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/secrets.js");
+    vi.doUnmock("../services/environments.js");
+    vi.doUnmock("../services/workspace-operations.js");
+    vi.doUnmock("../adapters/index.js");
+    vi.doUnmock("../routes/agents.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("@paperclipai/adapter-opencode-local/server");
+    registerModuleMocks();
+    vi.resetAllMocks();
+    dbStubOverride = null;
+
+    mockAgentService.getById.mockResolvedValue({ ...baseTargetAgent });
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAccessService.decide.mockImplementation(async () => ({ allowed: true, reason: "allow_explicit_grant", explanation: "" }));
+    mockAccessService.listPrincipalGrants.mockResolvedValue([]);
+    mockLogActivity.mockResolvedValue(undefined);
+    mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({ censorUsernameInLogs: false });
+    mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
+    mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(async (_id: string, keys: string[]) => keys);
+    mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_id: string, cfg: unknown) => cfg);
+    mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_id: string, cfg: unknown) => ({ config: cfg }));
+  });
+
+  it("returns 403 without agents.status.reset_infrastructure grant", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.hasPermission.mockResolvedValue(false);
+    const app = await createApp(boardActor, {
+      lastFailedRunCauseClass: "infrastructure",
+      lastFailedRunClassifyConfidence: "weak",
+      lastFailedRunCauseReason: "infrastructure_cause(signal_2_clean_stderr)",
+    });
+    const res = await requestApp(app, (base) =>
+      request(base).get(`/api/agents/${targetAgentId}/process-loss-context`),
+    );
+    expect(res.status).toBe(403);
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("returns 404 when agent not found", async () => {
+    mockAgentService.getById.mockResolvedValue(null);
+    const app = await createApp(boardActor);
+    const res = await requestApp(app, (base) =>
+      request(base).get(`/api/agents/${targetAgentId}/process-loss-context`),
+    );
+    expect(res.status).toBe(404);
+  }, 20_000);
+
+  it("returns 404 when no failed run exists for agent", async () => {
+    const app = await createApp(boardActor, { lastFailedRunCauseClass: null });
+    const res = await requestApp(app, (base) =>
+      request(base).get(`/api/agents/${targetAgentId}/process-loss-context`),
+    );
+    expect(res.status).toBe(404);
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("returns 200 with context and logs agent.process_loss_context_read (board actor)", async () => {
+    const weakReason = "infrastructure_cause(signal_2_clean_stderr)";
+    const app = await createApp(boardActor, {
+      lastFailedRunCauseClass: "infrastructure",
+      lastFailedRunClassifyConfidence: "weak",
+      lastFailedRunCauseReason: weakReason,
+    });
+    const res = await requestApp(app, (base) =>
+      request(base).get(`/api/agents/${targetAgentId}/process-loss-context`),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.confidence).toBe("weak");
+    expect(res.body.reason).toBe(weakReason);
+    expect(res.body.runId).toBe(failedRunId);
+    expect(res.body.finishedAt).toBe(failedRunFinishedAt.toISOString());
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "agent.process_loss_context_read",
+        entityType: "agent",
+        entityId: targetAgentId,
+        details: { runId: failedRunId },
+      }),
+    );
+  }, 20_000);
+
+  it("returns 200 with context and logs agent.process_loss_context_read (agent actor)", async () => {
+    const weakReason = "infrastructure_cause(signal_3_exit137)";
+    const app = await createApp(agentActor, {
+      lastFailedRunCauseClass: "infrastructure",
+      lastFailedRunClassifyConfidence: "weak",
+      lastFailedRunCauseReason: weakReason,
+    });
+    const res = await requestApp(app, (base) =>
+      request(base).get(`/api/agents/${targetAgentId}/process-loss-context`),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.reason).toBe(weakReason);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "agent.process_loss_context_read",
+        actorType: "agent",
+        actorId: actorAgentId,
+      }),
+    );
+  }, 20_000);
+
+  it("returns confidence and reason as null for primary-confidence run with no reason", async () => {
+    const app = await createApp(boardActor, {
+      lastFailedRunCauseClass: "infrastructure",
+      lastFailedRunClassifyConfidence: "primary",
+      lastFailedRunCauseReason: null,
+    });
+    const res = await requestApp(app, (base) =>
+      request(base).get(`/api/agents/${targetAgentId}/process-loss-context`),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.confidence).toBe("primary");
+    expect(res.body.reason).toBeNull();
+    expect(res.body.runId).toBe(failedRunId);
   }, 20_000);
 });
 
