@@ -52,6 +52,7 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
@@ -630,6 +631,7 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
   codex_local: [
     { path: ["timeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
+    { path: ["model"], value: DEFAULT_CODEX_LOCAL_MODEL },
   ],
   gemini_local: [
     { path: ["timeoutSec"], value: 0 },
@@ -762,6 +764,9 @@ function applyImportAdapterRunDefaults(
   const next = { ...adapterConfig };
   if (adapterType === "codex_local") {
     appendCodexImportArg(next, "--skip-git-repo-check");
+    if (!asString(next.model)) {
+      next.model = DEFAULT_CODEX_LOCAL_MODEL;
+    }
   }
   return next;
 }
