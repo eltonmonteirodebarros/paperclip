@@ -3398,6 +3398,16 @@ export function issueService(db: Db) {
     }
   }
 
+  async function assertValidGoal(companyId: string, goalId: string) {
+    const goal = await db
+      .select({ id: goals.id, companyId: goals.companyId })
+      .from(goals)
+      .where(eq(goals.id, goalId))
+      .then((rows) => rows[0] ?? null);
+    if (!goal) throw notFound("Goal not found");
+    if (goal.companyId !== companyId) throw unprocessable("Goal must belong to same company");
+  }
+
   async function assertValidLabelIds(companyId: string, labelIds: string[], dbOrTx: any = db) {
     if (labelIds.length === 0) return;
     const existing = await dbOrTx
@@ -4636,6 +4646,9 @@ export function issueService(db: Db) {
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
       }
+      if (data.goalId) {
+        await assertValidGoal(companyId, data.goalId);
+      }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
@@ -4913,6 +4926,9 @@ export function issueService(db: Db) {
       }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
+      }
+      if (issueData.goalId) {
+        await assertValidGoal(existing.companyId, issueData.goalId);
       }
       const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =

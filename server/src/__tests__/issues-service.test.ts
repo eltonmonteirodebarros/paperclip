@@ -4115,3 +4115,65 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
   });
 });
+
+describeEmbeddedPostgres("issueService goalId validation", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-goalid-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(goals);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("returns 404 when creating an issue with a non-existent goalId", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(
+      svc.create(companyId, {
+        title: "Test issue",
+        status: "todo",
+        priority: "medium",
+        goalId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ status: 404, message: "Goal not found" });
+  });
+
+  it("returns 404 when updating an issue with a non-existent goalId", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Test issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(
+      svc.update(issue.id, { goalId: randomUUID() }),
+    ).rejects.toMatchObject({ status: 404, message: "Goal not found" });
+  });
+});
