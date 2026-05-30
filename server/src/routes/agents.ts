@@ -2018,20 +2018,23 @@ export function agentRoutes(
       );
     }
 
-    // §5 weak-signal gate (GNO-214): if confidence is 'weak', the caller must
+    // §5 weak-signal gate (GNO-214, GNO-628): if confidence is 'weak', the caller must
     // explicitly acknowledge it and cite the reason string in the comment.
+    // The reason is not disclosed here — obtain it via GET /agents/:id/process-loss-context
+    // (economy-of-mechanism: discovery and control stay on separate paths).
     if (lastFailedRun.processLossClassifyConfidence === "weak") {
       if (req.body.weakSignalAcknowledged !== true) {
         throw unprocessable(
-          "Infrastructure reset denied: classification confidence is 'weak' " +
-          `(reason: ${lastFailedRun.processLossCauseReason ?? "unknown"}). ` +
-          "Set weakSignalAcknowledged=true and include the reason string verbatim in the comment.",
+          "Infrastructure reset denied: classification confidence is 'weak'. " +
+          "Obtain the reason string via GET /agents/:id/process-loss-context, " +
+          "set weakSignalAcknowledged=true and cite it verbatim in the comment.",
         );
       }
       const reason = lastFailedRun.processLossCauseReason ?? "";
       if (reason && !(req.body.comment as string).includes(reason)) {
         throw unprocessable(
-          `Infrastructure reset denied: comment must contain the verbatim weak-signal reason '${reason}'.`,
+          "Infrastructure reset denied: comment must contain the verbatim weak-signal reason. " +
+          "Obtain it via GET /agents/:id/process-loss-context.",
         );
       }
     }
@@ -2118,6 +2121,76 @@ export function agentRoutes(
     });
 
     res.json(updated);
+  });
+
+  // GET /agents/:id/process-loss-context (GNO-628)
+  // Returns the most recent failed run's process-loss classification context.
+  // Requires agents.status.reset_infrastructure grant — same surface, no new privilege.
+  // Logs every access to activity_log so correlation with the subsequent reset is possible.
+  router.get("/agents/:id/process-loss-context", async (req, res) => {
+    const targetId = req.params.id as string;
+    const targetAgent = await svc.getById(targetId);
+    if (!targetAgent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const actorAgentId = req.actor.type === "agent" ? req.actor.agentId : null;
+    const actorUserId = req.actor.type === "board" ? (req.actor.userId ?? null) : null;
+
+    const companyId = targetAgent.companyId;
+    assertCompanyAccess(req, companyId);
+
+    let callerHasGrant = false;
+    if (actorAgentId) {
+      callerHasGrant = await accessService(db).hasPermission(companyId, "agent", actorAgentId, "agents.status.reset_infrastructure");
+    } else if (actorUserId) {
+      callerHasGrant = await accessService(db).canUser(companyId, actorUserId, "agents.status.reset_infrastructure");
+    }
+    if (!callerHasGrant) {
+      throw forbidden("Missing grant: agents.status.reset_infrastructure");
+    }
+
+    const lastFailedRun = await db
+      .select({
+        id: heartbeatRuns.id,
+        processLossCauseClass: heartbeatRuns.processLossCauseClass,
+        processLossClassifyConfidence: heartbeatRuns.processLossClassifyConfidence,
+        processLossCauseReason: heartbeatRuns.processLossCauseReason,
+        finishedAt: heartbeatRuns.finishedAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, targetId),
+          eq(heartbeatRuns.status, "failed"),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.finishedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!lastFailedRun) {
+      res.status(404).json({ error: "No failed run found for this agent" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId,
+      actorType: actorAgentId ? "agent" : "user",
+      actorId: actorAgentId ?? actorUserId ?? "board",
+      action: "agent.process_loss_context_read",
+      entityType: "agent",
+      entityId: targetId,
+      details: { runId: lastFailedRun.id },
+    });
+
+    res.json({
+      confidence: lastFailedRun.processLossClassifyConfidence ?? null,
+      reason: lastFailedRun.processLossCauseReason ?? null,
+      runId: lastFailedRun.id,
+      finishedAt: lastFailedRun.finishedAt ?? null,
+    });
   });
 
   // GET /agents/:id/grants — list permission grants for an agent
