@@ -1037,12 +1037,29 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
-    if (adapterType !== "opencode_local") return;
-    try {
-      requireOpenCodeModelId(adapterConfig.model);
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+    if (adapterType === "opencode_local") {
+      try {
+        requireOpenCodeModelId(adapterConfig.model);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+      }
+      return;
+    }
+
+    const requestedModel = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
+    if (!requestedModel || !adapterType) return;
+
+    const adapter = findServerAdapter(adapterType);
+    const staticModels = adapter?.models ?? [];
+    if (staticModels.length === 0) return;
+
+    const allowedIds = new Set(staticModels.map((m) => m.id));
+    if (!allowedIds.has(requestedModel)) {
+      const allowed = staticModels.map((m) => m.id).join(", ");
+      throw unprocessable(
+        `Model "${requestedModel}" is not supported for adapter "${adapterType}". Allowed models: ${allowed}`,
+      );
     }
   }
 

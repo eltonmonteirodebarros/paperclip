@@ -113,6 +113,21 @@ const externalAdapter: ServerAdapterModule = {
   }),
 };
 
+const externalAdapterWithModels: ServerAdapterModule = {
+  type: "external_model_test",
+  models: [
+    { id: "model-a", label: "Model A" },
+    { id: "model-b", label: "Model B" },
+  ],
+  execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+  testEnvironment: async () => ({
+    adapterType: "external_model_test",
+    status: "pass",
+    checks: [],
+    testedAt: new Date(0).toISOString(),
+  }),
+};
+
 const missingAdapterType = "missing_adapter_validation_test";
 
 async function createApp() {
@@ -227,11 +242,13 @@ describe("agent routes adapter validation", () => {
       updatedAt: new Date(),
     }));
     await unregisterTestAdapter("external_test");
+    await unregisterTestAdapter("external_model_test");
     await unregisterTestAdapter(missingAdapterType);
   });
 
   afterEach(async () => {
     await unregisterTestAdapter("external_test");
+    await unregisterTestAdapter("external_model_test");
     await unregisterTestAdapter(missingAdapterType);
   });
 
@@ -266,5 +283,97 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
+  });
+
+  it("rejects a codex model configured on a claude_local adapter (GNO-734 regression)", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Cross-adapter agent",
+          adapterType: "claude_local",
+          adapterConfig: { model: "gpt-5.3-codex" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(
+      `Model "gpt-5.3-codex" is not supported for adapter "claude_local"`,
+    );
+  });
+
+  it("rejects a claude model configured on a codex_local adapter", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Cross-adapter agent",
+          adapterType: "codex_local",
+          adapterConfig: { model: "claude-sonnet-4-6" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(
+      `Model "claude-sonnet-4-6" is not supported for adapter "codex_local"`,
+    );
+  });
+
+  it("accepts a valid model on an adapter that has a static model list", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapterWithModels);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Model Test Agent",
+          adapterType: "external_model_test",
+          adapterConfig: { model: "model-a" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+  });
+
+  it("rejects an unknown model on an adapter with a static model list", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapterWithModels);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Wrong Model Agent",
+          adapterType: "external_model_test",
+          adapterConfig: { model: "gpt-5.3-codex" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(
+      `Model "gpt-5.3-codex" is not supported for adapter "external_model_test"`,
+    );
+  });
+
+  it("accepts creation without specifying a model (no model field = no validation)", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapterWithModels);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "No-model Agent",
+          adapterType: "external_model_test",
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
   });
 });
