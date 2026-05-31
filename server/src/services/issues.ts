@@ -3398,6 +3398,15 @@ export function issueService(db: Db) {
     }
   }
 
+  async function assertValidGoal(companyId: string, goalId: string, dbOrTx: any = db) {
+    const goal = await dbOrTx
+      .select({ id: goals.id, companyId: goals.companyId })
+      .from(goals)
+      .where(eq(goals.id, goalId))
+      .then((rows: Array<{ id: string; companyId: string }>) => rows[0] ?? null);
+    if (!goal || goal.companyId !== companyId) throw unprocessable("goalId not found");
+  }
+
   async function assertValidLabelIds(companyId: string, labelIds: string[], dbOrTx: any = db) {
     if (labelIds.length === 0) return;
     const existing = await dbOrTx
@@ -4639,6 +4648,9 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      if (issueData.goalId) {
+        await assertValidGoal(companyId, issueData.goalId);
+      }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
@@ -4932,6 +4944,9 @@ export function issueService(db: Db) {
       }
       if (nextExecutionWorkspaceId) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
+      }
+      if (issueData.goalId) {
+        await assertValidGoal(existing.companyId, issueData.goalId, dbOrTx);
       }
 
       applyStatusSideEffects(issueData.status, patch);
