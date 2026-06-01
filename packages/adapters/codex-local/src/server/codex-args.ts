@@ -1,6 +1,7 @@
 import { asBoolean, asString, asStringArray } from "@paperclipai/adapter-utils/server-utils";
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
+  DEFAULT_CODEX_LOCAL_MODEL,
   isCodexLocalFastModeSupported,
 } from "../index.js";
 
@@ -36,7 +37,9 @@ export function buildCodexExecArgs(
   } = {},
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
-  const model = asString(record.model, "").trim();
+  // Always pass an explicit model so Codex does not fall back to its own built-in
+  // default (currently gpt-5.3-codex-spark, which is invalid for consumer auth).
+  const model = asString(record.model, DEFAULT_CODEX_LOCAL_MODEL).trim();
   const modelReasoningEffort = asString(
     record.modelReasoningEffort,
     asString(record.reasoningEffort, ""),

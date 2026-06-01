@@ -49,10 +49,12 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
+    description: "Reduce cost on the primary model via lower reasoning effort without changing the model.",
     adapterConfig: {
-      model: "gpt-5.3-codex-spark",
-      // Spark is the cheap lane by model price; high effort keeps Codex coding behavior usable for delegated work.
+      // Do not override the primary model here: gpt-5.3-codex-spark is not valid
+      // for ChatGPT consumer auth and caused adapter_failed on every consumer-auth run.
+      // Cost is reduced through reasoning effort; callers that want a cheaper model
+      // should set adapterConfig.model explicitly.
       modelReasoningEffort: "high",
     },
     source: "adapter_default",

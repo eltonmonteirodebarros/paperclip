@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCodexExecArgs } from "./codex-args.js";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 
 describe("buildCodexExecArgs", () => {
   it("enables Codex fast mode overrides for GPT-5.4", () => {
@@ -66,6 +67,24 @@ describe("buildCodexExecArgs", () => {
       "gpt-5.3-codex",
       "-",
     ]);
+  });
+
+  it("uses DEFAULT_CODEX_LOCAL_MODEL when model is not configured", () => {
+    const result = buildCodexExecArgs({});
+
+    expect(result.model).toBe(DEFAULT_CODEX_LOCAL_MODEL);
+    expect(result.args).toContain("--model");
+    expect(result.args).toContain(DEFAULT_CODEX_LOCAL_MODEL);
+    // Verify gpt-5.3-codex-spark is never silently used as built-in default
+    expect(result.args).not.toContain("gpt-5.3-codex-spark");
+  });
+
+  it("uses DEFAULT_CODEX_LOCAL_MODEL when model is empty string", () => {
+    const result = buildCodexExecArgs({ model: "" });
+
+    expect(result.model).toBe(DEFAULT_CODEX_LOCAL_MODEL);
+    expect(result.args).toContain("--model");
+    expect(result.args).toContain(DEFAULT_CODEX_LOCAL_MODEL);
   });
 
   it("adds --skip-git-repo-check when requested", () => {
