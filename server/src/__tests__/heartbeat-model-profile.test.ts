@@ -35,10 +35,11 @@ describe("heartbeat model profile application", () => {
       configSource: "adapter_default",
       fallbackReason: null,
       adapterConfig: {
-        model: "gpt-5.3-codex-spark",
         modelReasoningEffort: "high",
       },
     });
+    // cheap profile must not override model — gpt-5.3-codex-spark is invalid for consumer auth
+    expect((modelProfile.adapterConfig as Record<string, unknown>)?.model).toBeUndefined();
   });
 
   it("applies cheap profile patches before explicit issue adapter config overrides", () => {

@@ -202,13 +202,17 @@ describe("server adapter registry", () => {
         source: "adapter_default",
       }),
     ]);
+    // codex_local cheap profile intentionally omits model override to avoid
+    // forcing gpt-5.3-codex-spark which is invalid for ChatGPT consumer auth
     await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.3-codex-spark" }),
+        adapterConfig: expect.objectContaining({ modelReasoningEffort: "high" }),
         source: "adapter_default",
       }),
     ]);
+    const codexCheapProfile = (await listAdapterModelProfiles("codex_local"))[0];
+    expect((codexCheapProfile?.adapterConfig as Record<string, unknown>)?.model).toBeUndefined();
     await expect(listAdapterModelProfiles("gemini_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
