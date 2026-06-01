@@ -100,6 +100,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { detectFirstCredential } from "./credential-scanner.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -7379,6 +7380,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
+
+    // PRE-EXECUTION CREDENTIAL SCAN (Layer 3 — GNO-753 / GNO-790)
+    // Scan executionRunConfig and agent.runtimeConfig for plaintext credentials
+    // before any secret resolution or adapter invocation.
+    const credentialHit = detectFirstCredential(executionRunConfig) ?? detectFirstCredential(agent.runtimeConfig);
+    if (credentialHit) {
+      const AEGIS_AGENT_ID = "e532fd90-620b-4f10-a9fc-f2697c083771";
+      const credMsg = `Heartbeat aborted: plaintext credential detected in field \`${credentialHit.field}\` (group ${credentialHit.group}, pattern: ${credentialHit.pattern}). Token value not logged. Use \`secretRefs\` to store credentials via the secret manager.`;
+      await setRunStatus(run.id, "failed", {
+        error: credMsg,
+        errorCode: "credential_detected",
+        finishedAt: new Date(),
+      });
+      if (issueId) {
+        await issuesSvc.update(issueId, { status: "blocked" });
+        await issuesSvc.addComment(issueId, credMsg, { agentId: agent.id, runId: run.id });
+        void enqueueWakeup(AEGIS_AGENT_ID, {
+          source: "automation",
+          reason: "credential_detected",
+          contextSnapshot: { issueId, companyId: agent.companyId },
+        }).catch((err: unknown) => {
+          logger.warn({ err, issueId }, "credential-scanner: failed to enqueue Aegis wakeup");
+        });
+      }
+      return;
+    }
+
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
