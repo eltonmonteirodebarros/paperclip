@@ -137,6 +137,17 @@ describe("heartbeat model profile application", () => {
     expect(merged).toEqual({ model: "primary" });
   });
 
+  it("cheap profile does not override a non-default base model", async () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: await listAdapterModelProfiles("codex_local"),
+      agentRuntimeConfig: { model: "gpt-5.4" },
+      issueModelProfile: "cheap",
+      contextSnapshot: {},
+    });
+    // gpt-5.4 base model must survive cheap profile application
+    expect((modelProfile.adapterConfig as Record<string, unknown>)?.model).toBeUndefined();
+  });
+
   it("normalizes a wake payload model profile into run context", () => {
     const contextSnapshot = normalizeModelProfileWakeContext({
       contextSnapshot: {},
