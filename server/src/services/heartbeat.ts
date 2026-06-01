@@ -173,6 +173,7 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { detectFirstCredential } from "./credential-scanner.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -7379,6 +7380,78 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
+
+    // PRE-EXECUTION CREDENTIAL SCAN — Layer 3 (GNO-753)
+    // Scan the merged adapterConfig and runtimeConfig for plaintext credentials
+    // (Grupo A + C patterns) before any secret resolution or adapter invocation.
+    const preExecCredDetection =
+      detectFirstCredential(executionRunConfig) ??
+      detectFirstCredential(parseObject(agent.runtimeConfig));
+    if (preExecCredDetection) {
+      logger.warn(
+        {
+          agentId: agent.id,
+          runId: run.id,
+          issueId: issueId ?? null,
+          field: preExecCredDetection.field,
+          group: preExecCredDetection.group,
+          patternName: preExecCredDetection.patternName,
+        },
+        "pre-execution guard: plaintext credential detected in adapterConfig — aborting run",
+      );
+      await setRunStatus(runId, "failed", {
+        error: "Plaintext credential detected in adapterConfig",
+        errorCode: "credential_detected",
+        finishedAt: new Date(),
+      });
+      await setWakeupStatus(run.wakeupRequestId, "failed", {
+        finishedAt: new Date(),
+        error: "Plaintext credential detected in adapterConfig",
+      });
+      if (issueId) {
+        const blockedComment =
+          `Execução bloqueada: credencial em texto claro detectada em adapterConfig.` +
+          ` Campo: \`${preExecCredDetection.field}\`. Remover o valor e usar secretRefs.`;
+        try {
+          await issuesSvc.update(issueId, { status: "blocked", actorAgentId: agent.id });
+        } catch (updateErr) {
+          logger.warn({ err: updateErr, issueId, runId }, "pre-execution guard: failed to set issue status to blocked");
+        }
+        try {
+          await issuesSvc.addComment(issueId, blockedComment, { agentId: agent.id, runId });
+        } catch (commentErr) {
+          logger.warn({ err: commentErr, issueId, runId }, "pre-execution guard: failed to post blocked comment");
+        }
+        // Notify Aegis asynchronously — best-effort, non-blocking
+        db.select({ id: agents.id })
+          .from(agents)
+          .where(and(eq(agents.companyId, agent.companyId), eq(agents.name, "Aegis")))
+          .then((rows) => rows[0] ?? null)
+          .then((aegis) => {
+            if (!aegis) return;
+            return enqueueWakeup(aegis.id, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "credential_detected",
+              payload: {
+                issueId,
+                agentId: agent.id,
+                field: preExecCredDetection.field,
+                group: preExecCredDetection.group,
+                patternName: preExecCredDetection.patternName,
+              },
+              requestedByActorType: "system",
+            });
+          })
+          .catch((notifyErr) => {
+            logger.warn({ err: notifyErr, runId }, "pre-execution guard: failed to notify Aegis");
+          });
+      }
+      const failedRun = await getRun(runId);
+      if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
+      return;
+    }
+
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
