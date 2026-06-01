@@ -87,3 +87,41 @@ describe("detectFirstCredential — fixture marker propagation", () => {
     expect(hit?.fixture).toBe(false);
   });
 });
+
+describe("detectFirstCredential — secretRefs false positive (GNO-826)", () => {
+  it("returns null for secretRefs.apiKey — key name in GROUP_C_FIELDS, value is a reference", () => {
+    const hit = detectFirstCredential({ secretRefs: { apiKey: "secret:my-openai-api-key" } });
+    expect(hit).toBeNull();
+  });
+
+  it("returns null for secretRefs.token", () => {
+    const hit = detectFirstCredential({ secretRefs: { token: "secret:some-service-token" } });
+    expect(hit).toBeNull();
+  });
+
+  it("returns null for secretRefs.secret", () => {
+    const hit = detectFirstCredential({ secretRefs: { secret: "secret:db-password-ref" } });
+    expect(hit).toBeNull();
+  });
+
+  it("returns null for secretRefs.password with long value", () => {
+    const hit = detectFirstCredential({ secretRefs: { password: "secret:vault/prod/db-password" } });
+    expect(hit).toBeNull();
+  });
+
+  it("still detects a real Group A token outside secretRefs", () => {
+    const hit = detectFirstCredential({
+      secretRefs: { apiKey: "secret:my-openai-api-key" },
+      description: FAKE_GHP,
+    });
+    expect(hit).not.toBeNull();
+    expect(hit?.group).toBe("A");
+    expect(hit?.pattern).toBe("github_pat");
+  });
+
+  it("still detects Group A token inside a non-secretRefs nested object", () => {
+    const hit = detectFirstCredential({ config: { token: FAKE_GHP } });
+    expect(hit).not.toBeNull();
+    expect(hit?.group).toBe("A");
+  });
+});

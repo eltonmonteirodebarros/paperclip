@@ -2,7 +2,8 @@
  * Credential scanner — shared token detection logic for Layer 1 (middleware),
  * Layer 2 (batch retroactive scan), and Layer 3 (pre-execution heartbeat guard).
  *
- * GNO-752 (Layer 1), GNO-753 (Layer 3), GNO-790 (persistence fix), GNO-799 (QA fixture suppression).
+ * GNO-752 (Layer 1), GNO-753 (Layer 3), GNO-790 (persistence fix), GNO-799 (QA fixture suppression),
+ * GNO-826 (detectFirstCredential secretRefs false positive fix).
  */
 
 export type CredentialGroup = "A" | "B" | "C";
@@ -63,6 +64,11 @@ const GROUP_B_ALPHANUM_RE = /[A-Za-z0-9]{32,}/;
 // Group C — adapterConfig/runtimeConfig long values (block, require secretRefs)
 const GROUP_C_FIELDS = new Set(["apiKey", "api_key", "accessToken", "access_token", "token", "secret", "password", "passwd"]);
 const GROUP_C_MIN_LENGTH = 16;
+
+// Keys whose object values are always secret references, never credential values.
+// detectFirstCredential skips recursion into these to avoid false positives from
+// child field names (e.g. secretRefs.apiKey) colliding with GROUP_C_FIELDS. GNO-826.
+const SECRET_REF_CONTAINER_KEYS = new Set(["secretRefs"]);
 
 /** Remove fenced and inline markdown code blocks from a string before scanning. */
 function stripMarkdownCode(text: string): string {
@@ -182,6 +188,7 @@ export function detectFirstCredential(
       const hit = scanString(value, key, opts);
       if (hit) return hit;
     } else if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (SECRET_REF_CONTAINER_KEYS.has(key)) continue;
       const hit = detectFirstCredential(value, opts);
       if (hit) return hit;
     }
