@@ -46,7 +46,7 @@ describe("serializeAdapterConfig", () => {
     };
     const result = serializeAdapterConfig(cfg);
     const key = (result.env as Record<string, unknown>).EMPTY_KEY as Record<string, unknown>;
-    expect(key.value).toBe("[REDACTED]");
+    expect(key.value).toBe(null);
     expect(key.hasValue).toBe(false);
   });
 

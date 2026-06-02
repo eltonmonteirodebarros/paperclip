@@ -59,11 +59,11 @@ export function serializeAdapterConfig(adapterConfig: unknown): Record<string, u
   for (const [key, binding] of Object.entries(env)) {
     if (isPlainBinding(binding)) {
       const hasValue = typeof binding.value === "string" && binding.value.length > 0;
-      serializedEnv[key] = { ...binding, hasValue, value: ADAPTER_ENV_REDACTED_SENTINEL };
+      serializedEnv[key] = { ...binding, hasValue, value: hasValue ? ADAPTER_ENV_REDACTED_SENTINEL : null };
     } else if (isSecretRefBinding(binding)) {
       serializedEnv[key] = { ...binding, hasValue: true, value: ADAPTER_ENV_REDACTED_SENTINEL };
     } else if (isPlainObject(binding)) {
-      serializedEnv[key] = { ...binding, hasValue: false, value: ADAPTER_ENV_REDACTED_SENTINEL };
+      serializedEnv[key] = { ...binding, hasValue: false, value: null };
     } else {
       serializedEnv[key] = { hasValue: false, value: null };
     }
