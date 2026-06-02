@@ -73,7 +73,7 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload, serializeAdapterConfig, ADAPTER_ENV_REDACTED_SENTINEL } from "../redaction.js";
+import { redactEventPayload, serializeAdapterConfig, getAdapterEnvMaskedKeys, ADAPTER_ENV_REDACTED_SENTINEL } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -533,6 +533,26 @@ export function agentRoutes(
       ? redactForRestrictedAgentView(agent)
       : { ...agent, adapterConfig: serializeAdapterConfig(agent.adapterConfig) };
     return { ...base, chainOfCommand, access: accessState };
+  }
+
+  async function logAdapterEnvReadMasked(
+    adapterConfig: unknown,
+    agent: { id: string; companyId: string },
+    actor: ReturnType<typeof getActorInfo>,
+  ) {
+    const keys = getAdapterEnvMaskedKeys(adapterConfig);
+    if (keys.length === 0) return;
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "adapter_env.read_masked",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { keys, targetAgentId: agent.id },
+    });
   }
 
   async function applyDefaultAgentTaskAssignGrant(
@@ -1610,6 +1630,8 @@ export function agentRoutes(
     const result = await svc.list(companyId);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
+      const actor = getActorInfo(req);
+      await Promise.all(result.map((agent) => logAdapterEnvReadMasked(agent.adapterConfig, agent, actor)));
       res.json(result.map((agent) => ({ ...agent, adapterConfig: serializeAdapterConfig(agent.adapterConfig) })));
       return;
     }
@@ -1728,6 +1750,8 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    const actor = getActorInfo(req);
+    await logAdapterEnvReadMasked(agent.adapterConfig, agent, actor);
     res.json(await buildAgentDetail(agent));
   });
 
@@ -1808,6 +1832,8 @@ export function agentRoutes(
       res.json(await buildAgentDetail(agent, { restricted: true }));
       return;
     }
+    const actor = getActorInfo(req);
+    await logAdapterEnvReadMasked(agent.adapterConfig, agent, actor);
     res.json(await buildAgentDetail(agent));
   });
 
@@ -1883,6 +1909,7 @@ export function agentRoutes(
       details: { revisionId },
     });
 
+    await logAdapterEnvReadMasked(updated.adapterConfig, updated, actor);
     res.json({ ...updated, adapterConfig: serializeAdapterConfig(updated.adapterConfig) });
   });
 
@@ -2121,6 +2148,7 @@ export function agentRoutes(
       });
     }
 
+    await logAdapterEnvReadMasked(agent.adapterConfig, agent, actor);
     res.status(201).json({ agent: { ...agent, adapterConfig: serializeAdapterConfig(agent.adapterConfig) }, approval });
   });
 
@@ -2241,6 +2269,7 @@ export function agentRoutes(
       );
     }
 
+    await logAdapterEnvReadMasked(agent.adapterConfig, agent, actor);
     res.status(201).json({ ...agent, adapterConfig: serializeAdapterConfig(agent.adapterConfig) });
   });
 
@@ -2301,6 +2330,7 @@ export function agentRoutes(
       },
     });
 
+    await logAdapterEnvReadMasked(agent.adapterConfig, agent, actor);
     res.json(await buildAgentDetail(agent));
   });
 
@@ -2757,6 +2787,7 @@ export function agentRoutes(
       });
     }
 
+    await logAdapterEnvReadMasked(agent.adapterConfig, agent, actor);
     res.json({ ...agent, adapterConfig: serializeAdapterConfig(agent.adapterConfig) });
   });
 
@@ -2783,6 +2814,8 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
+    const pauseActor = getActorInfo(req);
+    await logAdapterEnvReadMasked(agent.adapterConfig, agent, pauseActor);
     res.json({ ...agent, adapterConfig: serializeAdapterConfig(agent.adapterConfig) });
   });
 
@@ -2807,6 +2840,8 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
+    const resumeActor = getActorInfo(req);
+    await logAdapterEnvReadMasked(agent.adapterConfig, agent, resumeActor);
     res.json({ ...agent, adapterConfig: serializeAdapterConfig(agent.adapterConfig) });
   });
 
@@ -2842,6 +2877,8 @@ export function agentRoutes(
       details: { source: "agent_detail" },
     });
 
+    const approveActor = getActorInfo(req);
+    await logAdapterEnvReadMasked(agent.adapterConfig, agent, approveActor);
     res.json({ ...agent, adapterConfig: serializeAdapterConfig(agent.adapterConfig) });
   });
 
@@ -2868,6 +2905,8 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
+    const terminateActor = getActorInfo(req);
+    await logAdapterEnvReadMasked(agent.adapterConfig, agent, terminateActor);
     res.json({ ...agent, adapterConfig: serializeAdapterConfig(agent.adapterConfig) });
   });
 

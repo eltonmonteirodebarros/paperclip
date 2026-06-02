@@ -45,6 +45,24 @@ export const REDACTED_EVENT_VALUE = "***REDACTED***";
 export const ADAPTER_ENV_REDACTED_SENTINEL = "[REDACTED]";
 
 /**
+ * Returns the env keys that carry a value in the given adapterConfig.
+ * A key "has a value" if it is a non-empty plain binding or a secret_ref.
+ * Mirrors the masking logic of serializeAdapterConfig so callers can determine
+ * which keys would appear as masked in the API response.
+ */
+export function getAdapterEnvMaskedKeys(adapterConfig: unknown): string[] {
+  if (!isPlainObject(adapterConfig)) return [];
+  const env = adapterConfig.env;
+  if (!isPlainObject(env)) return [];
+  return Object.entries(env)
+    .filter(([, binding]) => {
+      if (isPlainBinding(binding)) return typeof binding.value === "string" && binding.value.length > 0;
+      return isSecretRefBinding(binding);
+    })
+    .map(([key]) => key);
+}
+
+/**
  * Serialize adapterConfig for API responses: every adapterConfig.env.*.value
  * is replaced with ADAPTER_ENV_REDACTED_SENTINEL. A hasValue boolean is added
  * to let clients distinguish "configured but masked" from "not set".

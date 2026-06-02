@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ADAPTER_ENV_REDACTED_SENTINEL, serializeAdapterConfig } from "../redaction.ts";
+import { ADAPTER_ENV_REDACTED_SENTINEL, serializeAdapterConfig, getAdapterEnvMaskedKeys } from "../redaction.ts";
 
 // Spec ref: GNO-915 §1-§3 — all adapterConfig.env.*.value must be masked in API responses.
 
@@ -90,5 +90,70 @@ describe("serializeAdapterConfig", () => {
     const cfg = { adapterType: "claude_local", cwd: "/foo" };
     const result = serializeAdapterConfig(cfg);
     expect(result).toEqual(cfg);
+  });
+});
+
+// Spec ref: GNO-926 / GNO-915 §5 — adapter_env.read_masked audit event
+describe("getAdapterEnvMaskedKeys", () => {
+  it("returns empty array for non-object input", () => {
+    expect(getAdapterEnvMaskedKeys(null)).toEqual([]);
+    expect(getAdapterEnvMaskedKeys(undefined)).toEqual([]);
+    expect(getAdapterEnvMaskedKeys("string")).toEqual([]);
+  });
+
+  it("returns empty array when no env field", () => {
+    expect(getAdapterEnvMaskedKeys({ cwd: "/foo" })).toEqual([]);
+  });
+
+  it("returns empty array for env: {}", () => {
+    expect(getAdapterEnvMaskedKeys({ env: {} })).toEqual([]);
+  });
+
+  it("includes key for non-empty plain binding", () => {
+    const cfg = { env: { GITHUB_TOKEN: { type: "plain", value: "ghp_abc" } } };
+    expect(getAdapterEnvMaskedKeys(cfg)).toEqual(["GITHUB_TOKEN"]);
+  });
+
+  it("excludes key for empty plain binding", () => {
+    const cfg = { env: { EMPTY: { type: "plain", value: "" } } };
+    expect(getAdapterEnvMaskedKeys(cfg)).toEqual([]);
+  });
+
+  it("includes key for secret_ref binding", () => {
+    const cfg = { env: { DB_PASS: { type: "secret_ref", secretId: "s-xyz" } } };
+    expect(getAdapterEnvMaskedKeys(cfg)).toEqual(["DB_PASS"]);
+  });
+
+  it("returns all keys that have values, excludes empty ones", () => {
+    const cfg = {
+      env: {
+        HAS_VALUE: { type: "plain", value: "secret" },
+        SECRET_REF: { type: "secret_ref", secretId: "s-1" },
+        EMPTY: { type: "plain", value: "" },
+        NULL_VALUE: { type: "plain", value: null },
+      },
+    };
+    const keys = getAdapterEnvMaskedKeys(cfg);
+    expect(keys).toContain("HAS_VALUE");
+    expect(keys).toContain("SECRET_REF");
+    expect(keys).not.toContain("EMPTY");
+    expect(keys).not.toContain("NULL_VALUE");
+  });
+
+  it("result mirrors serializeAdapterConfig hasValue:true keys", () => {
+    const cfg = {
+      env: {
+        A: { type: "plain", value: "val" },
+        B: { type: "plain", value: "" },
+        C: { type: "secret_ref", secretId: "s-2" },
+      },
+    };
+    const serialized = serializeAdapterConfig(cfg);
+    const env = serialized.env as Record<string, Record<string, unknown>>;
+    const maskedKeys = Object.entries(env)
+      .filter(([, b]) => b.hasValue === true)
+      .map(([k]) => k)
+      .sort();
+    expect(getAdapterEnvMaskedKeys(cfg).sort()).toEqual(maskedKeys);
   });
 });
