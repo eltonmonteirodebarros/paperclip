@@ -73,7 +73,7 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactEventPayload, serializeAdapterConfig, ADAPTER_ENV_REDACTED_SENTINEL } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -527,11 +527,12 @@ export function agentRoutes(
       buildAgentAccessState(agent),
     ]);
 
-    return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
-      chainOfCommand,
-      access: accessState,
-    };
+    // Restricted actors (without agent_config:read) get a blanked adapterConfig.
+    // All other actors get sentinel-masked env values — never plaintext.
+    const base = options?.restricted
+      ? redactForRestrictedAgentView(agent)
+      : { ...agent, adapterConfig: serializeAdapterConfig(agent.adapterConfig) };
+    return { ...base, chainOfCommand, access: accessState };
   }
 
   async function applyDefaultAgentTaskAssignGrant(
@@ -1284,7 +1285,7 @@ export function agentRoutes(
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
-      adapterConfig: redactEventPayload(agent.adapterConfig),
+      adapterConfig: serializeAdapterConfig(redactEventPayload(agent.adapterConfig) ?? {}),
       runtimeConfig: redactEventPayload(agent.runtimeConfig),
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
@@ -1609,7 +1610,7 @@ export function agentRoutes(
     const result = await svc.list(companyId);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => ({ ...agent, adapterConfig: serializeAdapterConfig(agent.adapterConfig) })));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -1796,6 +1797,9 @@ export function agentRoutes(
       return;
     }
     assertCompanyAccess(req, agent.companyId);
+    // Self-read no longer bypasses masking: isSelf grants non-restricted view
+    // (so key names and structure are visible) but values are still sentinel-masked
+    // in buildAgentDetail via serializeAdapterConfig — never plaintext via API.
     const isSelf = req.actor.type === "agent" && req.actor.agentId === id;
     const canReadSensitiveDetail = isSelf
       ? true
@@ -2589,6 +2593,7 @@ export function agentRoutes(
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
       hasOwn(patchData, "adapterConfig");
+    const envAuditActions: Array<{ event: string; key: string }> = [];
     if (touchesAdapterConfiguration) {
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
       const changingAdapterType =
@@ -2596,18 +2601,62 @@ export function agentRoutes(
       const requestedAdapterConfig = hasOwn(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})
         : null;
+
+      // Env-level merge with sentinel detection (spec GNO-915 §6):
+      // - "[REDACTED]" sentinel → no-op, preserve existing value, log noop_sentinel_passed
+      // - value: null on a plain binding → explicit clear, log adapter_env.clear
+      // - absent key in partial merge (!replaceAdapterConfig) → preserved from existing
+      // - replaceAdapterConfig=true starts from empty env (caller controls which keys survive)
+      let resolvedAdapterConfig = requestedAdapterConfig;
+      if (requestedAdapterConfig && hasOwn(requestedAdapterConfig as object, "env")) {
+        const existingEnv = asRecord(asRecord(existingAdapterConfig)?.env) ?? {};
+        const rawRequestedEnv = requestedAdapterConfig.env;
+        if (rawRequestedEnv === null) {
+          // env: null → full clear
+          envAuditActions.push({ event: "adapter_env.clear", key: "*" });
+          resolvedAdapterConfig = { ...requestedAdapterConfig, env: {} };
+        } else {
+          const requestedEnv = asRecord(rawRequestedEnv);
+          if (requestedEnv) {
+            const baseEnv: Record<string, unknown> = replaceAdapterConfig ? {} : { ...existingEnv };
+            const mergedEnv: Record<string, unknown> = { ...baseEnv };
+            for (const [key, binding] of Object.entries(requestedEnv)) {
+              const b = asRecord(binding);
+              if (b !== null && b.type === "plain" && b.value === ADAPTER_ENV_REDACTED_SENTINEL) {
+                if (Object.prototype.hasOwnProperty.call(existingEnv, key)) {
+                  mergedEnv[key] = existingEnv[key];
+                  envAuditActions.push({ event: "adapter_env.noop_sentinel_passed", key });
+                } else {
+                  res.status(400).json({
+                    error: `Cannot use redacted sentinel "[REDACTED]" for new env key: ${key}`,
+                  });
+                  return;
+                }
+              } else if (b !== null && b.type === "plain" && b.value === null) {
+                delete mergedEnv[key];
+                envAuditActions.push({ event: "adapter_env.clear", key });
+              } else {
+                mergedEnv[key] = binding;
+                envAuditActions.push({ event: "adapter_env.set", key });
+              }
+            }
+            resolvedAdapterConfig = { ...requestedAdapterConfig, env: mergedEnv };
+          }
+        }
+      }
+
       if (
-        requestedAdapterConfig
+        resolvedAdapterConfig
         && replaceAdapterConfig
         && KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) =>
-          existingAdapterConfig[key] !== undefined && requestedAdapterConfig[key] === undefined,
+          existingAdapterConfig[key] !== undefined && resolvedAdapterConfig[key] === undefined,
         )
       ) {
         await assertCanManageInstructionsPath(req, existing);
       }
-      let rawEffectiveAdapterConfig = requestedAdapterConfig ?? existingAdapterConfig;
-      if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
-        rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...requestedAdapterConfig };
+      let rawEffectiveAdapterConfig = resolvedAdapterConfig ?? existingAdapterConfig;
+      if (resolvedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
+        rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...resolvedAdapterConfig };
       }
       if (changingAdapterType) {
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
@@ -2693,7 +2742,22 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    // Audit env-specific write events (never sampled per spec GNO-915 §5)
+    for (const envEvent of envAuditActions) {
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: envEvent.event,
+        entityType: "agent",
+        entityId: agent.id,
+        details: { key: envEvent.key, targetAgentId: agent.id },
+      });
+    }
+
+    res.json({ ...agent, adapterConfig: serializeAdapterConfig(agent.adapterConfig) });
   });
 
   router.post("/agents/:id/pause", async (req, res) => {

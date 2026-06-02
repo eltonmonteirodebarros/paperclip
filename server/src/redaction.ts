@@ -39,6 +39,39 @@ const SECRET_TEXT_HINTS = [
 ] as const;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
 
+// Canonical sentinel for adapter env var values in API responses.
+// Any value returned in adapterConfig.env.*.value is this constant.
+// Callers must never persist this string as an actual env value.
+export const ADAPTER_ENV_REDACTED_SENTINEL = "[REDACTED]";
+
+/**
+ * Serialize adapterConfig for API responses: every adapterConfig.env.*.value
+ * is replaced with ADAPTER_ENV_REDACTED_SENTINEL. A hasValue boolean is added
+ * to let clients distinguish "configured but masked" from "not set".
+ * The type field and all other metadata are preserved.
+ */
+export function serializeAdapterConfig(adapterConfig: unknown): Record<string, unknown> {
+  if (!isPlainObject(adapterConfig)) return {};
+  const env = adapterConfig.env;
+  if (!isPlainObject(env)) return { ...adapterConfig };
+
+  const serializedEnv: Record<string, unknown> = {};
+  for (const [key, binding] of Object.entries(env)) {
+    if (isPlainBinding(binding)) {
+      const hasValue = typeof binding.value === "string" && binding.value.length > 0;
+      serializedEnv[key] = { ...binding, hasValue, value: ADAPTER_ENV_REDACTED_SENTINEL };
+    } else if (isSecretRefBinding(binding)) {
+      serializedEnv[key] = { ...binding, hasValue: true, value: ADAPTER_ENV_REDACTED_SENTINEL };
+    } else if (isPlainObject(binding)) {
+      serializedEnv[key] = { ...binding, hasValue: false, value: ADAPTER_ENV_REDACTED_SENTINEL };
+    } else {
+      serializedEnv[key] = { hasValue: false, value: null };
+    }
+  }
+
+  return { ...adapterConfig, env: serializedEnv };
+}
+
 function maybeContainsSecretText(input: string) {
   const lower = input.toLowerCase();
   return SECRET_TEXT_HINTS.some((hint) => lower.includes(hint)) || input.includes(".");
