@@ -13,8 +13,30 @@
  * credentials to close the evasion path.
  */
 
+import { createHash } from "node:crypto";
 import { scanObjectForCredentials } from "./credential-scanner.js";
 import { logger } from "../middleware/logger.js";
+
+/**
+ * Canonical fingerprint function for Layer 2 scanner dedup.
+ *
+ * Formula: SHA1(entityType + entityId + field + patternName) — direct concatenation, no separator.
+ * This must be the ONLY place this hash is computed; callers must never reimplement inline.
+ *
+ * Test vector (GNO-993 / GNO-1195):
+ *   computeScannerFingerprint("issue_comments", "9735d861-11e9-4886-9f31-c04ead526b6b", "body", "github_pat")
+ *   === "1da550870752fe554b4165f9271e5c7ecf916c0e"
+ */
+export function computeScannerFingerprint(
+  entityType: string,
+  entityId: string,
+  field: string,
+  patternName: string,
+): string {
+  return createHash("sha1")
+    .update(entityType + entityId + field + patternName)
+    .digest("hex");
+}
 
 export interface BatchScanTarget {
   /** Identifier of the entity being scanned (issue id, comment id, etc.) */
@@ -63,7 +85,7 @@ export interface BatchScanOptions {
  */
 export async function batchScanForCredentials(
   targets: BatchScanTarget[],
-  onRealHit: (target: BatchScanTarget, field: string, group: string, pattern: string) => Promise<void>,
+  onRealHit: (target: BatchScanTarget, field: string, group: string, pattern: string, fingerprint: string) => Promise<void>,
   opts: BatchScanOptions = {},
 ): Promise<BatchScanSummary> {
   let realHits = 0;
@@ -100,7 +122,8 @@ export async function batchScanForCredentials(
         );
       } else {
         realHits++;
-        await onRealHit(target, hit.field, hit.group, hit.pattern);
+        const fingerprint = computeScannerFingerprint(target.entityType, target.entityId, hit.field, hit.pattern);
+        await onRealHit(target, hit.field, hit.group, hit.pattern, fingerprint);
       }
     }
   }
